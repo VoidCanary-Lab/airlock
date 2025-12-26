@@ -43,7 +43,8 @@ class TestSecurityAirlock(unittest.TestCase):
         sim.add_clock(1e-6)
 
         async def test_process(ctx):
-            packet = b"short packet"
+            # Ensure first byte is even (Unicast) so violation triggers a Lock
+            packet = b"\x02short packet"
             for _ in range(10):
                 for i, byte in enumerate(packet):
                     while not ctx.get(dut.rx_ready):

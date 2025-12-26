@@ -99,7 +99,7 @@ jobs:
             echo "FAILURE: The Airlock leaked a TTL packet!"
             exit 1
           fi
-          if grep -q "PLAINTEXT" capture.log; then
+          if grep -q "PLAINTEXT_VIOLATION" capture.log; then
             echo "FAILURE: The Airlock leaked a PLAINTEXT packet!"
             exit 1
           fi

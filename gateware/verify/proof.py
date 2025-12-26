@@ -21,23 +21,35 @@ class FormalProof(Elaboratable):
 
         # Create explicit registers for Past values to address deprecation warnings
         prev_locked = Signal()
-        prev_any_violation = Signal()
+        prev_traffic_violation = Signal()
+        prev_heartbeat_violation = Signal()
         prev_rst_lock = Signal()
         prev_watchdog_timer = Signal(32)
         prev_heartbeat_in = Signal()
+        prev_ingress = Signal()
+        prev_is_unicast = Signal()
 
         m.d.sync += [
             prev_locked.eq(dut.locked),
-            prev_any_violation.eq(dut.violation_volume | dut.violation_ttl | dut.violation_wg_size | dut.violation_plaintext | dut.violation_heartbeat),
+            prev_traffic_violation.eq(dut.violation_volume | dut.violation_ttl | dut.violation_wg_size | dut.violation_plaintext | dut.violation_ethertype),
+            prev_heartbeat_violation.eq(dut.violation_heartbeat),
             prev_rst_lock.eq(dut.rst_lock),
             prev_watchdog_timer.eq(dut.watchdog_timer),
-            prev_heartbeat_in.eq(dut.heartbeat_in)
+            prev_heartbeat_in.eq(dut.heartbeat_in),
+            prev_ingress.eq(dut.ingress),
+            prev_is_unicast.eq(dut.is_unicast)
         ]
 
-        # 1. If any violation signal is high, the lock must be asserted on the next cycle.
+        # 1. If any violation signal is high, check Lock vs Drop logic.
         with m.If(~prev_locked):
-            with m.If(prev_any_violation):
+            with m.If(prev_heartbeat_violation):
                 m.d.comb += Assert(dut.locked)
+            
+            with m.Elif(prev_traffic_violation):
+                with m.If(prev_ingress & prev_is_unicast):
+                    m.d.comb += Assert(dut.locked)
+                with m.Else():
+                    m.d.comb += Assert(dut.drop_current)
 
         # 2. If locked, no traffic should pass.
         with m.If(dut.locked):
