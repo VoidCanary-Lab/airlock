@@ -18,6 +18,6 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: Run Ansible Lint
-        uses: ansible-actions/ansible-lint-action@v6
+        uses: ansible/ansible-lint@v6
         with:
           path: "infrastructure/ansible/"
