@@ -24,15 +24,27 @@ The primary goal is to demonstrate how Bounded Model Checking (BMC) can be used 
 This project implements a "Virtual Bridge" for development, allowing the `SecurityAirlock` gateware to be simulated and verified against real network traffic.
 
 ```text
-  +--------------------+      +-----------------------+      +-----------------------+
-  |  Network Source    |----->|   Security Airlock    |<---->| Heartbeat Generator   |
-  +--------------------+      | (Amaranth Gateware)   |      +-----------------------+
-            |                 +-----------------------+                 |
-            |                             |                             |
-            v                             v                             v
-  +--------------------+      +-----------------------+      +-----------------------+
-  | Isolated Network   |<-----|   TAP Interface       |      |    Control Plane      |
-  +--------------------+      +-----------------------+      +-----------------------+
+[ DANGER ZONE ]                                     [ SAFE ZONE ]
+
+  +-----------------------+                        +-----------------------+
+  |    Network Source     |                        |   Isolated Network    |
+  |   (Hostile Internet)  |                        |    (The Vault VM)     |
+  +-----------+-----------+                        +-----------+-----------+
+              |                                                ^
+              | (Raw Traffic)                                  | (Clean Traffic)
+              |                                                |
+              v                                                |
+  +-----------------------+                        +-----------------------+
+  |   Security Airlock    |----------------------->|     TAP Interface     |
+  |  (Amaranth Gateware)  |      (Approved)        | (Virtual Cable to VM) |
+  +-----------+-----------+                        +-----------------------+
+              |
+              | (Violation Detected)
+              v
+      +---------------+
+      |  DROP / NULL  |
+      | (Black Hole)  |
+      +---------------+
 ```
 
 ### Repository Structure
