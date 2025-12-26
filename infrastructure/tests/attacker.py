@@ -8,15 +8,12 @@ from scapy.all import sendp, Ether, IP, UDP, Raw
 def run_attacker(interface, traffic_type):
     print(f"[*] Sending {traffic_type} traffic on {interface}...")
     
-    # Construct a basic packet
-    pkt = Ether() / IP(dst="192.168.100.2") / UDP(dport=1234)
-    
-    if traffic_type == "MALICIOUS":
-        # Signature that should be dropped
-        pkt = pkt / Raw(load=b"PAYLOAD_MALICIOUS_DATA")
-    else:
-        # Signature that should pass
-        pkt = pkt / Raw(load=b"PAYLOAD_VALID_DATA")
+    if traffic_type == "VALID":
+        pkt = Ether() / IP(dst="192.168.100.2") / UDP(dport=1234) / Raw(load="VALID")
+    elif traffic_type == "TTL":
+        pkt = Ether() / IP(dst="192.168.100.2", ttl=50) / UDP(dport=1234) / Raw(load="TTL")
+    elif traffic_type == "PLAINTEXT":
+        pkt = Ether() / IP(dst="192.168.100.2") / UDP(dport=1234) / Raw(load="PLAINTEXT")
 
     # Send a burst to ensure capture
     for _ in range(3):
@@ -26,7 +23,7 @@ def run_attacker(interface, traffic_type):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--interface", required=True, help="Network interface to send on")
-    parser.add_argument("--type", choices=["MALICIOUS", "VALID"], required=True, help="Traffic profile")
+    parser.add_argument("--type", choices=["VALID", "TTL", "PLAINTEXT"], required=True, help="Traffic profile")
     args = parser.parse_args()
     
     run_attacker(args.interface, args.type)

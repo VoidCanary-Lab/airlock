@@ -65,15 +65,20 @@ jobs:
           sudo ip netns exec vault_ns python3 -u infrastructure/tests/listener.py > capture.log &
           
           # 2. Send BAD traffic (Should be dropped)
-          sudo python3 infrastructure/tests/attacker.py --interface veth_in --type MALICIOUS
+          sudo python3 infrastructure/tests/attacker.py --interface veth_in --type TTL
+          sudo python3 infrastructure/tests/attacker.py --interface veth_in --type PLAINTEXT
           
           # 3. Send GOOD traffic (Should pass)
           sudo python3 infrastructure/tests/attacker.py --interface veth_in --type VALID
 
       - name: Verify Results
         run: |
-          if grep -q "MALICIOUS" capture.log; then
-            echo "FAILURE: The Airlock leaked a malicious packet!"
+          if grep -q "TTL" capture.log; then
+            echo "FAILURE: The Airlock leaked a TTL packet!"
+            exit 1
+          fi
+          if grep -q "PLAINTEXT" capture.log; then
+            echo "FAILURE: The Airlock leaked a PLAINTEXT packet!"
             exit 1
           fi
           if grep -q "VALID" capture.log; then

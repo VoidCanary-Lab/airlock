@@ -19,8 +19,9 @@ def run_bridge(rx_interface, tx_interface):
     def heartbeat_process():
         while True:
             yield dut.heartbeat_in.eq(~(yield dut.heartbeat_in))
-            yield Tick()
-            time.sleep(0.5)
+            for _ in range(500000): # 0.5s at 1MHz
+                yield Tick()
+
 
     def status_monitor_process():
         led_status = "ON"

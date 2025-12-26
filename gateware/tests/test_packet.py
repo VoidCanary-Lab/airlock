@@ -71,6 +71,30 @@ class TestSecurityAirlock(unittest.TestCase):
         sim.add_process(test_process)
         sim.run()
 
+    def test_plaintext_check(self):
+        dut = SecurityAirlock()
+        sim = Simulator(dut)
+
+        def test_process():
+            # Packet with ASCII payload
+            packet = bytearray([0x00]*43) + b"this is a test of the plaintext check"
+
+            for i, byte in enumerate(packet):
+                while not (yield dut.rx_ready):
+                    yield Tick()
+                yield dut.rx_data.eq(byte)
+                yield dut.rx_valid.eq(1)
+                yield dut.rx_last.eq(i == len(packet) - 1)
+                yield Tick()
+            
+            yield dut.rx_valid.eq(0)
+            yield Tick()
+            
+            self.assertEqual((yield dut.status_led), 0)
+
+        sim.add_process(test_process)
+        sim.run()
+
     def test_lock_reset(self):
         dut = SecurityAirlock()
         sim = Simulator(dut)

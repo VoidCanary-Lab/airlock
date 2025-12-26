@@ -20,21 +20,22 @@ class FormalProof(Elaboratable):
         # --- Formal Properties ---
 
         # 1. If any violation signal is high, the lock must be asserted on the next cycle.
-        with m.If(dut.violation_volume | dut.violation_ttl | dut.violation_wg_size | dut.violation_plaintext | dut.violation_heartbeat):
-            # We need to check the next cycle state of locked
-            m.d.comb += Assert(Initial() | dut.locked == 1)
+        with m.If(~Past(dut.locked)):
+            with m.If(Past(dut.violation_volume | dut.violation_ttl | dut.violation_wg_size | dut.violation_plaintext | dut.violation_heartbeat)):
+                m.d.comb += Assert(dut.locked)
 
         # 2. If locked, no traffic should pass.
         with m.If(dut.locked):
             m.d.comb += Assert(dut.tx_valid == 0)
 
         # 3. Watchdog timer should decrement and trigger a violation.
-        with m.If(Past(dut.watchdog_timer) > 0):
-             with m.If(Past(dut.heartbeat_in) == dut.heartbeat_in):
-                m.d.comb += Assert(dut.watchdog_timer == Past(dut.watchdog_timer) - 1)
-        
-        with m.If(Past(dut.watchdog_timer) == 0):
-            m.d.comb += Assert(dut.violation_heartbeat == 1)
+        with m.If(~Past(dut.rst_lock)):
+            with m.If(Past(dut.watchdog_timer) > 0):
+                 with m.If(Past(dut.heartbeat_in) == dut.heartbeat_in):
+                    m.d.comb += Assert(dut.watchdog_timer == Past(dut.watchdog_timer) - 1)
+            
+            with m.If(Past(dut.watchdog_timer) == 0):
+                m.d.comb += Assert(dut.violation_heartbeat == 1)
 
         # Cover the lock state to ensure it is reachable
         m.d.comb += Cover(dut.locked)

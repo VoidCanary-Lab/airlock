@@ -5,12 +5,9 @@ import sys
 from scapy.all import sniff
 
 def packet_callback(pkt):
-    raw = bytes(pkt)
-    # Check for signatures and print for the CI grep check
-    if b"MALICIOUS" in raw:
-        print("ALERT: MALICIOUS PACKET RECEIVED")
-    elif b"VALID" in raw:
-        print("INFO: VALID PACKET RECEIVED")
+    # Just print the payload for the CI grep check
+    if pkt.haslayer(Raw):
+        print(pkt[Raw].load.decode('utf-8', errors='ignore'))
     
     # Ensure output is flushed immediately for logs
     sys.stdout.flush()
