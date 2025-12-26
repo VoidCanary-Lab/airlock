@@ -9,7 +9,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from amaranth.back import verilog
-from gateware.src.packet import EthernetFilter
+from gateware.src.packet import SecurityAirlock
 from gateware.src.platform import ULX3SPlatform
 
 def build():
@@ -17,7 +17,7 @@ def build():
     parser.add_argument("--flash", action="store_true", help="Synthesize and flash to hardware")
     args = parser.parse_args()
 
-    top = EthernetFilter()
+    top = SecurityAirlock()
 
     if args.flash:
         print("[*] Building for ULX3S Platform...")
@@ -25,11 +25,12 @@ def build():
         # In a real environment, this would invoke the toolchain
         platform.build(top, do_program=True)
     else:
-        print("[*] Generating Verilog (ethernet_filter.v)...")
-        with open("ethernet_filter.v", "w") as f:
+        print("[*] Generating Verilog (security_airlock.v)...")
+        with open("security_airlock.v", "w") as f:
             f.write(verilog.convert(top, ports=[
                 top.rx_data, top.rx_valid, top.rx_last, top.rx_ready,
-                top.tx_data, top.tx_valid, top.tx_last, top.tx_ready
+                top.tx_data, top.tx_valid, top.tx_last, top.tx_ready,
+                top.heartbeat_in, top.rst_lock, top.status_led
             ]))
 
 if __name__ == "__main__":
