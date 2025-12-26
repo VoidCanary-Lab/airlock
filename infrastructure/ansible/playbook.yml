@@ -1,0 +1,31 @@
+# Copyright (c) 2025 VoidCanary-Lab
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+---
+- name: Hardening and Configuration
+  hosts: all
+  become: yes
+  tasks:
+    - name: Disable IPv6
+      sysctl:
+        name: net.ipv6.conf.all.disable_ipv6
+        value: '1'
+        state: present
+
+- name: Configure Gateway
+  hosts: gateway
+  become: yes
+  tasks:
+    - name: Install Cloudflared
+      apt:
+        name: cloudflared
+        state: present
+
+- name: Configure Vault
+  hosts: vault
+  become: yes
+  tasks:
+    - name: Install Wazuh Agent
+      apt:
+        name: wazuh-agent
+        state: present
