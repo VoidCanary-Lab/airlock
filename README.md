@@ -24,27 +24,48 @@ The primary goal is to demonstrate how Bounded Model Checking (BMC) can be used 
 This project implements a "Virtual Bridge" for development, allowing the `SecurityAirlock` gateware to be simulated and verified against real network traffic.
 
 ```text
-[ DANGER ZONE ]                                     [ SAFE ZONE ]
-
-  +-----------------------+                        +-----------------------+
-  |    Network Source     |                        |   Isolated Network    |
-  |   (Hostile Internet)  |                        |    (The Vault VM)     |
-  +-----------+-----------+                        +-----------+-----------+
-              |                                                ^
-              | (Raw Traffic)                                  | (Clean Traffic)
-              |                                                |
-              v                                                |
-  +-----------------------+                        +-----------------------+
-  |   Security Airlock    |----------------------->|     TAP Interface     |
-  |  (Amaranth Gateware)  |      (Approved)        | (Virtual Cable to VM) |
-  +-----------+-----------+                        +-----------------------+
-              |
-              | (Violation Detected)
-              v
-      +---------------+
-      |  DROP / NULL  |
-      | (Black Hole)  |
-      +---------------+
+ZONE 0: HOSTILE INTERNET                 ZONE 1: THE AIRLOCK (FPGA)                  ZONE 2: GATEWAY VM
++----------------------------------+     +-------------------------------------+     +--------------------------+
+|                                  |     |                                     |     |                          |
+|  [ VPS CONTROL ]                 |     |          [ WATCHDOG LOGIC ]         |     |                          |
+|  "I am alive!" (SipHash)         |     |    +-------+                        |     |                          |
+|        |                         |     |    |       | If Pulse OK: Switch=ON |     |                          |
+|        +----------------------------------->| TIMER | If Pulse NO: Switch=OFF|     |                          |
+|          (Control Flow)          |     |    +---+---+                        |     |                          |
+|                                  |     |        |                            |     |                          |
+|                                  |     |        v                            |     |                          |
++----------------------------------+     |      /   \   <-- KILL SWITCH        |     |                          |
+|                                  |     |     /  O  \      (Hardware)         |     |                          |
+|  [ USER TRAFFIC ]                |     |    /       \                        |     |                          |
+|                                  |     |   | Status  |                       |     |                          |
+|        |                         |     |   | ON/OFF  |                       |     |                          |
+|        |                         |     |   +----+----+                       |     |                          |
+|        | (Data Flow)             |     |                                     |     |                          |
+|        |                         |     |                                     |     |                          |
+|  +---------------------+         |     |    +-------+                        |     |    +----------------+    |
+|  |(Encrypted WireGuard)|<-------------------| DATA  |<----------------------------------| WireGuard      |    |
+|  +---------------------+         |     |    |FILTER |(Check: TTL, Size, 95MB)|     |    | Encrypted      |    |
+|                                  |     |    +-------+                        |     |    +-------+--------+    |
++----------------------------------+     +-------------------------------------+     |            |             |
+                                                                                     +------------+-------------+
+                                                                                                  |
+                                                                                  (Decrypted IP)  | 
+                                                                                                  ^
+      ZONE 5: INTERNAL SERVICES                ZONE 4: SECURITY STACK (The Filter)                |
++----------------------------------+     +--------------------------------------------------------|--+
+|                                  |     |                                                        |  |
+|                                  |     |   +--------------+      +-------------+                |  |
+|   [ SENSITIVE APPS ]             |     |   |   IPTABLES   |----->|   PI-HOLE   | (DNS Sinkhole) |  |
+|   - Database                     |     |   |  (Firewall)  |      |             | ---------------+  |
+|   - Git Repos (VoidCanary)       |-------->|              |      +------+------+                   |
+|   - Wiki                         |     |   +--------------+                                        |
+|                                  |     |                                                           |
+|                                  |     |                         +-------------+                   |
+|                                  |     |                         |     MDR     |                   |
+|                                  |     |                         |(Wazuh-agent)|                   |
+|                                  |     |                         +-------------+                   |
++----------------------------------+     |                                                           |
+                                         +-----------------------------------------------------------+
 ```
 
 ### Repository Structure
