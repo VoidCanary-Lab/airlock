@@ -6,7 +6,7 @@ import os
 from amaranth import *
 from amaranth.sim import Simulator
 from amaranth.back import verilog
-from amaranth.formal import *
+from amaranth.hdl.ast import Assert, Cover, Past, Initial
 
 # Ensure we can import from the root workspace
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
