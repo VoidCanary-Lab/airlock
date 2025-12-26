@@ -69,7 +69,7 @@ class SecurityAirlock(Elaboratable):
             self.tx_data.eq(self.rx_data),
             self.tx_valid.eq(self.rx_valid & ~locked),
             self.tx_last.eq(self.rx_last),
-            self.rx_ready.eq(self.tx_ready) # Always ready to receive
+            self.rx_ready.eq(1) # Always ready to receive
         ]
 
         # --- 3. Packet Processing Loop ---
