@@ -20,4 +20,4 @@ jobs:
       - name: Run Ansible Lint
         uses: ansible/ansible-lint@v6
         with:
-          path: "infrastructure/ansible/"
+          requirements_file: "infrastructure/ansible/requirements.yml"
