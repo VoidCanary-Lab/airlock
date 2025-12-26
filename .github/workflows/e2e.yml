@@ -19,10 +19,13 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Dependencies
+      - name: Install System Dependencies
         run: |
-          pip install amaranth scapy
+          sudo apt-get update
           sudo apt-get install -y iproute2 bridge-utils net-tools
+
+      - name: Install Python Dependencies
+        run: pip install -r requirements.txt
 
       - name: Setup Virtual Topology (The "Air Gap")
         run: |
