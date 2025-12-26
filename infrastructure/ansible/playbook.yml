@@ -2,16 +2,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 ---
-- name: Hardening and Configuration
-  hosts: all
-  become: yes
-  tasks:
-    - name: Disable IPv6
-      sysctl:
-        name: net.ipv6.conf.all.disable_ipv6
-        value: '1'
-        state: present
-
 - name: Configure Gateway
   hosts: gateway
   become: yes

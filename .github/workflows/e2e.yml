@@ -33,7 +33,7 @@ jobs:
 
           # 1. Create a Network Namespace for the Vault (Isolated)
           sudo ip netns add vault_ns
-          
+
           # 2. Create Virtual Cables (veth pairs)
           # Link A: External World <-> FPGA Input
           sudo ip link add veth_in type veth peer name veth_in_peer
@@ -42,7 +42,7 @@ jobs:
 
           # 3. Move one end of Link B into the Vault Namespace
           sudo ip link set veth_out_peer netns vault_ns
-          
+
           # 4. Configure Interfaces (Disable IPv6 to prevent noise)
           sudo sysctl -w net.ipv6.conf.veth_in.disable_ipv6=1
           sudo sysctl -w net.ipv6.conf.veth_in_peer.disable_ipv6=1
@@ -55,7 +55,7 @@ jobs:
           sudo ip link set veth_in up
           sudo ip link set veth_in_peer up
           sudo ip link set veth_out up
-          
+
           # Inside the Vault, bring up the interface and assign IP
           sudo ip netns exec vault_ns ip link set lo up
           sudo ip netns exec vault_ns ip link set veth_out_peer up
@@ -71,24 +71,24 @@ jobs:
         run: |
           # 1. Start a listener inside the Vault (to see what gets through)
           sudo ip netns exec vault_ns python3 -u infrastructure/tests/listener.py > capture.log &
-          
+
           # Restart the bridge to ensure a clean state (resetting any previous locks)
           sudo pkill -f bridge.py || true
           sleep 2
           sudo python3 gateware/sim/bridge.py --rx veth_in_peer --tx veth_out &
-          
+
           # Wait for Bridge and Listener to initialize
           sleep 20
-          
+
           # 2. Send GOOD traffic (Should pass)
           sudo python3 infrastructure/tests/attacker.py --interface veth_in --type VALID
-          
+
           # Restart bridge to ensure clean state for bad traffic test
           sudo pkill -f bridge.py || true
           sleep 2
           sudo python3 gateware/sim/bridge.py --rx veth_in_peer --tx veth_out &
           sleep 5
-          
+
           # 3. Send BAD traffic (Should be dropped)
           sudo python3 infrastructure/tests/attacker.py --interface veth_in --type TTL
           sudo python3 infrastructure/tests/attacker.py --interface veth_in --type PLAINTEXT
