@@ -19,9 +19,24 @@ class FormalProof(Elaboratable):
 
         # --- Formal Properties ---
 
+        # Create explicit registers for Past values to address deprecation warnings
+        prev_locked = Signal()
+        prev_any_violation = Signal()
+        prev_rst_lock = Signal()
+        prev_watchdog_timer = Signal(32)
+        prev_heartbeat_in = Signal()
+
+        m.d.sync += [
+            prev_locked.eq(dut.locked),
+            prev_any_violation.eq(dut.violation_volume | dut.violation_ttl | dut.violation_wg_size | dut.violation_plaintext | dut.violation_heartbeat),
+            prev_rst_lock.eq(dut.rst_lock),
+            prev_watchdog_timer.eq(dut.watchdog_timer),
+            prev_heartbeat_in.eq(dut.heartbeat_in)
+        ]
+
         # 1. If any violation signal is high, the lock must be asserted on the next cycle.
-        with m.If(~Past(dut.locked)):
-            with m.If(Past(dut.violation_volume | dut.violation_ttl | dut.violation_wg_size | dut.violation_plaintext | dut.violation_heartbeat)):
+        with m.If(~prev_locked):
+            with m.If(prev_any_violation):
                 m.d.comb += Assert(dut.locked)
 
         # 2. If locked, no traffic should pass.
@@ -29,12 +44,12 @@ class FormalProof(Elaboratable):
             m.d.comb += Assert(dut.tx_valid == 0)
 
         # 3. Watchdog timer should decrement and trigger a violation.
-        with m.If(~Past(dut.rst_lock)):
-            with m.If(Past(dut.watchdog_timer) > 0):
-                 with m.If(Past(dut.heartbeat_in) == dut.heartbeat_in):
-                    m.d.comb += Assert(dut.watchdog_timer == Past(dut.watchdog_timer) - 1)
+        with m.If(~prev_rst_lock):
+            with m.If(prev_watchdog_timer > 0):
+                 with m.If(prev_heartbeat_in == dut.heartbeat_in):
+                    m.d.comb += Assert(dut.watchdog_timer == prev_watchdog_timer - 1)
             
-            with m.If(Past(dut.watchdog_timer) == 0):
+            with m.If(prev_watchdog_timer == 0):
                 m.d.comb += Assert(dut.violation_heartbeat == 1)
 
         # Cover the lock state to ensure it is reachable
