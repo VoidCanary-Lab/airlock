@@ -4,7 +4,7 @@
 from amaranth import *
 
 class SecurityAirlock(Elaboratable):
-    def __init__(self):
+    def __init__(self, heartbeat_timeout=25000000, volume_limit=99614720):
         # --- Ports ---
         # Data Stream (AXI-Stream style)
         self.rx_data  = Signal(8)
@@ -30,14 +30,14 @@ class SecurityAirlock(Elaboratable):
         self.violation_plaintext = Signal()
         self.violation_heartbeat = Signal()
         
-        self.HEARTBEAT_TIMEOUT = 25000000 
-        self.watchdog_timer = Signal(32, reset=self.HEARTBEAT_TIMEOUT)
+        self.HEARTBEAT_TIMEOUT = heartbeat_timeout
+        self.VOLUME_LIMIT = volume_limit
+        self.watchdog_timer = Signal(32, init=self.HEARTBEAT_TIMEOUT)
 
     def elaborate(self, platform):
         m = Module()
 
         # --- Internal State ---
-        LIMIT_95MB = 99614720
         volume_cnt = Signal(27)
         byte_ptr = Signal(11) 
         
@@ -81,7 +81,7 @@ class SecurityAirlock(Elaboratable):
                 m.d.sync += byte_ptr.eq(byte_ptr + 1)
 
             # --- 4. Filtering Logic ---
-            with m.If(volume_cnt >= LIMIT_95MB):
+            with m.If(volume_cnt >= self.VOLUME_LIMIT):
                 m.d.sync += self.violation_volume.eq(1)
 
             # Check for EtherType 0x0800 (IPv4)
@@ -134,5 +134,19 @@ class SecurityAirlock(Elaboratable):
                 m.d.sync += self.watchdog_timer.eq(self.watchdog_timer - 1)
             with m.Else():
                 m.d.sync += self.violation_heartbeat.eq(1)
+
+        # --- 6. Manual Reset Logic ---
+        # Clear violation flags and counters when reset is requested.
+        # Placed at the end to override other assignments in the same cycle.
+        with m.If(self.rst_lock):
+            m.d.sync += [
+                self.violation_volume.eq(0),
+                self.violation_ttl.eq(0),
+                self.violation_wg_size.eq(0),
+                self.violation_plaintext.eq(0),
+                self.violation_heartbeat.eq(0),
+                self.watchdog_timer.eq(self.HEARTBEAT_TIMEOUT),
+                volume_cnt.eq(0)
+            ]
 
         return m

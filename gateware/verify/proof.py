@@ -15,7 +15,7 @@ from gateware.src.packet import SecurityAirlock
 class FormalProof(Elaboratable):
     def elaborate(self, platform):
         m = Module()
-        m.submodules.dut = dut = SecurityAirlock()
+        m.submodules.dut = dut = SecurityAirlock(heartbeat_timeout=10)
 
         # --- Formal Properties ---
 

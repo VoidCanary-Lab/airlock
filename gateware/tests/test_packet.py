@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import unittest
-from amaranth.sim import Simulator, Tick
+from amaranth.sim import Simulator
 import sys
 import os
 
@@ -13,110 +13,132 @@ class TestSecurityAirlock(unittest.TestCase):
     def test_ttl_check(self):
         dut = SecurityAirlock()
         sim = Simulator(dut)
+        sim.add_clock(1e-6)
 
-        def test_process():
-            packet = bytearray([0x00]*22) + b'\x32' + bytearray([0x00]*10)
+        async def test_process(ctx):
+            # Construct a valid IPv4 packet with low TTL (EtherType 0x0800, TTL at byte 22)
+            packet = bytearray([0x00]*12) + b'\x08\x00' + \
+                     b'\x45' + bytearray([0x00]*7) + b'\x32' + bytearray([0x00]*10)
 
             for i, byte in enumerate(packet):
-                while not (yield dut.rx_ready):
-                    yield Tick()
-                yield dut.rx_data.eq(byte)
-                yield dut.rx_valid.eq(1)
-                yield dut.rx_last.eq(i == len(packet) - 1)
-                yield Tick()
+                while not ctx.get(dut.rx_ready):
+                    await ctx.tick()
+                ctx.set(dut.rx_data, byte)
+                ctx.set(dut.rx_valid, 1)
+                ctx.set(dut.rx_last, i == len(packet) - 1)
+                await ctx.tick()
             
-            yield dut.rx_valid.eq(0)
-            yield Tick()
+            ctx.set(dut.rx_valid, 0)
+            await ctx.tick()
             
-            self.assertEqual((yield dut.status_led), 0)
+            self.assertEqual(ctx.get(dut.status_led), 0)
 
-        sim.add_process(test_process)
+        sim.add_testbench(test_process)
         sim.run()
 
     def test_volume_limit(self):
-        dut = SecurityAirlock()
+        # Set a small volume limit for testing (100 bytes)
+        dut = SecurityAirlock(volume_limit=100)
         sim = Simulator(dut)
-        dut.LIMIT_95MB = 100 
+        sim.add_clock(1e-6)
 
-        def test_process():
+        async def test_process(ctx):
             packet = b"short packet"
             for _ in range(10):
                 for i, byte in enumerate(packet):
-                    while not (yield dut.rx_ready):
-                        yield Tick()
-                    yield dut.rx_data.eq(byte)
-                    yield dut.rx_valid.eq(1)
-                    yield dut.rx_last.eq(i == len(packet) - 1)
-                    yield Tick()
+                    while not ctx.get(dut.rx_ready):
+                        await ctx.tick()
+                    ctx.set(dut.rx_data, byte)
+                    ctx.set(dut.rx_valid, 1)
+                    ctx.set(dut.rx_last, i == len(packet) - 1)
+                    await ctx.tick()
             
-            yield dut.rx_valid.eq(0)
-            yield Tick()
+            ctx.set(dut.rx_valid, 0)
+            await ctx.tick()
 
-            self.assertEqual((yield dut.status_led), 0)
+            self.assertEqual(ctx.get(dut.status_led), 0)
         
-        sim.add_process(test_process)
+        sim.add_testbench(test_process)
         sim.run()
 
     def test_heartbeat(self):
-        dut = SecurityAirlock()
+        # Set a small heartbeat timeout for testing (10 cycles)
+        dut = SecurityAirlock(heartbeat_timeout=10)
         sim = Simulator(dut)
-        dut.HEARTBEAT_TIMEOUT = 10
+        sim.add_clock(1e-6)
 
-        def test_process():
+        async def test_process(ctx):
             for _ in range(15):
-                yield Tick()
+                await ctx.tick()
             
-            self.assertEqual((yield dut.status_led), 0)
+            self.assertEqual(ctx.get(dut.status_led), 0)
 
-        sim.add_process(test_process)
+        sim.add_testbench(test_process)
         sim.run()
 
     def test_plaintext_check(self):
         dut = SecurityAirlock()
         sim = Simulator(dut)
+        sim.add_clock(1e-6)
 
-        def test_process():
+        async def test_process(ctx):
             # Packet with ASCII payload
-            packet = bytearray([0x00]*43) + b"this is a test of the plaintext check"
+            eth_header = bytearray([0x00]*12) + b'\x08\x00'
+            ip_header = b'\x45' + bytearray([0x00]*19)
+            payload = b"this is a test of the plaintext check"
+            packet = eth_header + ip_header + payload
 
             for i, byte in enumerate(packet):
-                while not (yield dut.rx_ready):
-                    yield Tick()
-                yield dut.rx_data.eq(byte)
-                yield dut.rx_valid.eq(1)
-                yield dut.rx_last.eq(i == len(packet) - 1)
-                yield Tick()
+                while not ctx.get(dut.rx_ready):
+                    await ctx.tick()
+                ctx.set(dut.rx_data, byte)
+                ctx.set(dut.rx_valid, 1)
+                ctx.set(dut.rx_last, i == len(packet) - 1)
+                await ctx.tick()
             
-            yield dut.rx_valid.eq(0)
-            yield Tick()
+            ctx.set(dut.rx_valid, 0)
+            await ctx.tick()
             
-            self.assertEqual((yield dut.status_led), 0)
+            self.assertEqual(ctx.get(dut.status_led), 0)
 
-        sim.add_process(test_process)
+        sim.add_testbench(test_process)
         sim.run()
 
     def test_lock_reset(self):
         dut = SecurityAirlock()
         sim = Simulator(dut)
+        sim.add_clock(1e-6)
 
-        def test_process():
-            yield dut.rst_lock.eq(1)
-            yield Tick()
-            yield dut.rst_lock.eq(0)
-            yield Tick()
-            self.assertEqual((yield dut.status_led), 1)
+        async def test_process(ctx):
+            ctx.set(dut.rst_lock, 1)
+            await ctx.tick()
+            ctx.set(dut.rst_lock, 0)
+            await ctx.tick()
+            self.assertEqual(ctx.get(dut.status_led), 1)
 
-            yield dut.violation_ttl.eq(1)
-            yield Tick()
-            self.assertEqual((yield dut.status_led), 0)
+            # Trigger violation via packet (TTL violation)
+            packet = bytearray([0x00]*12) + b'\x08\x00' + \
+                     b'\x45' + bytearray([0x00]*7) + b'\x32' + bytearray([0x00]*10)
+            
+            for i, byte in enumerate(packet):
+                while not ctx.get(dut.rx_ready):
+                    await ctx.tick()
+                ctx.set(dut.rx_data, byte)
+                ctx.set(dut.rx_valid, 1)
+                ctx.set(dut.rx_last, i == len(packet) - 1)
+                await ctx.tick()
+            
+            ctx.set(dut.rx_valid, 0)
+            await ctx.tick()
+            self.assertEqual(ctx.get(dut.status_led), 0)
 
-            yield dut.rst_lock.eq(1)
-            yield Tick()
-            yield dut.rst_lock.eq(0)
-            yield Tick()
-            self.assertEqual((yield dut.status_led), 1)
+            ctx.set(dut.rst_lock, 1)
+            await ctx.tick()
+            ctx.set(dut.rst_lock, 0)
+            await ctx.tick()
+            self.assertEqual(ctx.get(dut.status_led), 1)
 
-        sim.add_process(test_process)
+        sim.add_testbench(test_process)
         sim.run()
 
 if __name__ == "__main__":
