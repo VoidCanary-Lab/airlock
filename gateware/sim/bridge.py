@@ -43,6 +43,7 @@ def run_bridge(rx_interface, tx_interface):
 
     def simulation_process():
         yield dut.rx_valid.eq(0)
+        yield dut.ingress.eq(1) # Default to Ingress (Outside -> Inside) for this bridge
         
         print(f"[*] Listening on {rx_interface}...", flush=True)
         # Ensure interface is in promiscuous mode to capture all traffic
@@ -96,8 +97,16 @@ def run_bridge(rx_interface, tx_interface):
                     
                     is_locked = (yield dut.status_led) == 0
 
-                    if output_buffer and not is_locked:
-                        print(f"[>] FORWARDING Packet to {tx_interface}", flush=True)
+                    # Check if packet was truncated (Drop or Lock mid-stream)
+                    was_truncated = len(output_buffer) < len(raw_bytes)
+
+                    if output_buffer:
+                        if is_locked:
+                            print(f"[!] FORWARDING TRUNCATED Packet (Locked mid-stream)", flush=True)
+                        elif was_truncated:
+                            print(f"[!] FORWARDING TRUNCATED Packet (Drop Active)", flush=True)
+                        else:
+                            print(f"[>] FORWARDING Packet to {tx_interface}", flush=True)
                         tx_socket.send(bytes(output_buffer))
                     else:
                         print(f"[!] DROPPING Packet (Locked: {is_locked})", flush=True)

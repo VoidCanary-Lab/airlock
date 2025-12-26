@@ -21,6 +21,7 @@ class SecurityAirlock(Elaboratable):
         self.heartbeat_in = Signal() # Input from GPIO/SPI (VPS SPIHash)
         self.rst_lock     = Signal() # Manual Reset Button
         self.status_led   = Signal() # ON = Traffic Flowing, OFF = Locked
+        self.ingress      = Signal(reset=1) # 1=From Outside (Ingress), 0=From Inside (Egress)
 
         # --- Internal State ---
         self.locked = Signal()
@@ -29,6 +30,9 @@ class SecurityAirlock(Elaboratable):
         self.violation_wg_size   = Signal()
         self.violation_plaintext = Signal()
         self.violation_heartbeat = Signal()
+        self.violation_ethertype = Signal()
+        self.is_unicast          = Signal()
+        self.drop_current        = Signal()
         
         self.HEARTBEAT_TIMEOUT = heartbeat_timeout
         self.VOLUME_LIMIT = volume_limit
@@ -39,7 +43,7 @@ class SecurityAirlock(Elaboratable):
 
         # --- Internal State ---
         volume_cnt = Signal(27)
-        byte_ptr = Signal(11) 
+        byte_ptr = Signal(16) 
         
         # IP Header Fields
         is_ip = Signal()
@@ -49,11 +53,23 @@ class SecurityAirlock(Elaboratable):
         
         plaintext_cnt = Signal(4)
 
+        # Consolidate violations
+        traffic_violation = Signal()
+        m.d.comb += traffic_violation.eq(self.violation_volume | self.violation_ttl | self.violation_wg_size | self.violation_plaintext | self.violation_ethertype)
+
         # --- 1. Global Lock Logic ---
         with m.If(self.rst_lock):
             m.d.sync += self.locked.eq(0)
-        with m.Elif(self.violation_volume | self.violation_ttl | self.violation_wg_size | self.violation_plaintext | self.violation_heartbeat):
+            m.d.sync += self.drop_current.eq(0)
+        with m.Elif(self.violation_heartbeat):
+            # Heartbeat failure is a system integrity issue; always lock.
             m.d.sync += self.locked.eq(1)
+        with m.Elif(traffic_violation):
+            # Lock ONLY if Unicast AND coming from Outside. Otherwise, just drop the packet.
+            with m.If(self.ingress & self.is_unicast):
+                m.d.sync += self.locked.eq(1)
+            with m.Else():
+                m.d.sync += self.drop_current.eq(1)
 
         m.d.comb += self.status_led.eq(~self.locked)
 
@@ -64,7 +80,7 @@ class SecurityAirlock(Elaboratable):
 
         m.d.comb += [
             self.tx_data.eq(self.rx_data),
-            self.tx_valid.eq(self.rx_valid & ~self.locked),
+            self.tx_valid.eq(self.rx_valid & ~self.locked & ~self.drop_current),
             self.tx_last.eq(self.rx_last),
             self.rx_ready.eq(1)
         ]
@@ -77,8 +93,18 @@ class SecurityAirlock(Elaboratable):
                 m.d.sync += byte_ptr.eq(0)
                 m.d.sync += is_ip.eq(0)
                 m.d.sync += plaintext_cnt.eq(0)
+                # Clear per-packet violations so they don't taint the next packet
+                m.d.sync += self.violation_ttl.eq(0)
+                m.d.sync += self.violation_wg_size.eq(0)
+                m.d.sync += self.violation_plaintext.eq(0)
+                m.d.sync += self.violation_ethertype.eq(0)
             with m.Else():
                 m.d.sync += byte_ptr.eq(byte_ptr + 1)
+
+            # Capture Unicast/Multicast at Byte 0 (LSB of 1st byte: 0=Unicast, 1=Multicast)
+            with m.If(byte_ptr == 0):
+                m.d.sync += self.is_unicast.eq(~self.rx_data[0])
+                m.d.sync += self.drop_current.eq(0)
 
             # --- 4. Filtering Logic ---
             with m.If(volume_cnt >= self.VOLUME_LIMIT):
@@ -87,8 +113,13 @@ class SecurityAirlock(Elaboratable):
             # Check for EtherType 0x0800 (IPv4)
             with m.If((byte_ptr == 12) & (self.rx_data == 0x08)):
                 m.d.sync += is_ip.eq(1)
-            with m.If((byte_ptr == 13) & (self.rx_data != 0x00)):
-                m.d.sync += is_ip.eq(0)
+            with m.If(byte_ptr == 13):
+                with m.If(self.rx_data != 0x00):
+                    m.d.sync += is_ip.eq(0)
+                
+                # Strict IPv4 Check: If not 0x0800, trigger violation (which may Lock or Drop based on direction)
+                with m.If(~is_ip | (self.rx_data != 0x00)):
+                    m.d.sync += self.violation_ethertype.eq(1)
 
             # IP Packet Processing
             with m.If(is_ip):
@@ -116,7 +147,8 @@ class SecurityAirlock(Elaboratable):
                 # Plaintext check in payload
                 with m.If(byte_ptr > (14 + ip_hdr_len * 4 -1)):
                     with m.If((self.rx_data >= 0x20) & (self.rx_data <= 0x7E)):
-                        m.d.sync += plaintext_cnt.eq(plaintext_cnt + 1)
+                        with m.If(plaintext_cnt < 15):
+                            m.d.sync += plaintext_cnt.eq(plaintext_cnt + 1)
                     with m.Else():
                         m.d.sync += plaintext_cnt.eq(0)
                     
@@ -145,6 +177,8 @@ class SecurityAirlock(Elaboratable):
                 self.violation_wg_size.eq(0),
                 self.violation_plaintext.eq(0),
                 self.violation_heartbeat.eq(0),
+                self.violation_ethertype.eq(0),
+                self.drop_current.eq(0),
                 self.watchdog_timer.eq(self.HEARTBEAT_TIMEOUT),
                 volume_cnt.eq(0)
             ]

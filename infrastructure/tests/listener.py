@@ -4,9 +4,16 @@
 import sys
 import json
 import base64
-from scapy.all import sniff, Raw
+from scapy.all import sniff, Raw, IP
 
 def packet_callback(pkt):
+    # Detect physically truncated packets (Airlock "Cut the Wire")
+    if pkt.haslayer(IP):
+        # If captured length is less than IP Total Length, it was cut mid-stream
+        if len(pkt) < pkt[IP].len:
+            print(f"[!] TRUNCATED PACKET DETECTED (Len={len(pkt)}, IP.Len={pkt[IP].len})")
+            return
+
     # Just print the payload for the CI grep check
     if pkt.haslayer(Raw):
         payload = pkt[Raw].load.decode('utf-8', errors='ignore')
