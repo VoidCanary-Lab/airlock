@@ -107,7 +107,7 @@ class SecurityAirlock(Elaboratable):
                         m.d.sync += violation_ttl.eq(1)
                 
                 # Use IHL to determine end of IP header
-                with m.If(byte_ptr == (14 + ip_hdr_len * 4 -1)):
+                with m.If((byte_ptr == (14 + ip_hdr_len * 4 -1)) & (byte_ptr > 14)):
                     with m.If(ip_len < 32): # Check for tiny packets
                         m.d.sync += violation_wg_size.eq(1)
 
@@ -134,4 +134,3 @@ class SecurityAirlock(Elaboratable):
                 m.d.sync += violation_heartbeat.eq(1)
 
         return m
-
