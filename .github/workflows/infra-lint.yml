@@ -17,7 +17,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+      - name: Install ansible
+        run: pip install ansible
+      - name: Install Ansible collections
+        run: ansible-galaxy collection install -r infrastructure/ansible/requirements.yml
       - name: Run Ansible Lint
         uses: ansible/ansible-lint@v6
         with:
-          requirements_file: "infrastructure/ansible/requirements.yml"
+          args: "infrastructure/ansible/"
