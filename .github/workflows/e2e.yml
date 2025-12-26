@@ -50,6 +50,9 @@ jobs:
           sudo ip netns exec vault_ns ip link set veth_out_peer up
           sudo ip netns exec vault_ns ip addr add 192.168.100.2/24 dev veth_out_peer
 
+      - name: Install Scapy in Namespace
+        run: sudo ip netns exec vault_ns python3 -m pip install scapy
+
       - name: Start the Gateware Bridge (Background)
         run: |
           # This script reads from veth_in_peer, filters via Amaranth, writes to veth_out
