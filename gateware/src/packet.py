@@ -32,7 +32,7 @@ class SecurityAirlock(Elaboratable):
         
         self.HEARTBEAT_TIMEOUT = heartbeat_timeout
         self.VOLUME_LIMIT = volume_limit
-        self.watchdog_timer = Signal(32, reset=self.HEARTBEAT_TIMEOUT)
+        self.watchdog_timer = Signal(32, init=self.HEARTBEAT_TIMEOUT)
 
     def elaborate(self, platform):
         m = Module()
