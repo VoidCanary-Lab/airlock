@@ -80,7 +80,8 @@ class SecurityAirlock(Elaboratable):
 
         m.d.comb += [
             self.tx_data.eq(self.rx_data),
-            self.tx_valid.eq(self.rx_valid & ~self.locked & ~self.drop_current),
+            # Gate TX with Reset and immediate violation signals to reduce leakage latency and prevent bypass
+            self.tx_valid.eq(self.rx_valid & ~self.locked & ~self.drop_current & ~self.rst_lock & ~traffic_violation & ~self.violation_heartbeat),
             self.tx_last.eq(self.rx_last),
             self.rx_ready.eq(1)
         ]
