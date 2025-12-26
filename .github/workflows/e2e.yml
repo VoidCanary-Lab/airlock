@@ -3,10 +3,7 @@
 
 name: End-to-End Topology Test
 
-on:
-  push:
-    paths: ['gateware/**', 'infrastructure/**']
-  pull_request:
+on: [push, pull_request]
 
 jobs:
   topology-test:

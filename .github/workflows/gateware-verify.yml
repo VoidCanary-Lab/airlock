@@ -3,19 +3,19 @@
 
 name: Gateware Verification
 
-on:
-  push:
-    paths: ['gateware/**']
-  pull_request:
+on: [push, pull_request]
 
 jobs:
   formal-proof:
     runs-on: ubuntu-latest
-    container: 
-      image: ghcr.io/yosyshq/oss-cad-suite-build:v3 # Pre-installed Yosys/SymbiYosys
     steps:
       - uses: actions/checkout@v3
-      
+
+      - name: Install OSS CAD Suite
+        run: |
+          curl -L https://github.com/YosysHQ/oss-cad-suite-build/releases/download/2025-12-26/oss-cad-suite-linux-x64-20251226.tgz | tar -xz
+          echo "$(pwd)/oss-cad-suite/bin" >> $GITHUB_PATH
+
       - name: Install Python Deps
         run: pip install amaranth
 
@@ -23,7 +23,7 @@ jobs:
         run: |
           cd gateware/verify
           python3 proof.py
-        
+
   simulation-test:
     runs-on: ubuntu-latest
     steps:

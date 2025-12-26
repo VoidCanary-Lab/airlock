@@ -3,9 +3,7 @@
 
 name: Infrastructure Lint
 
-on:
-  push:
-    paths: ['infrastructure/**']
+on: [push, pull_request]
 
 jobs:
   terraform-validate:
