@@ -1,5 +1,7 @@
 # Airlock
 
+![VoidCanary-Lab](assets/voidcanary-lab.jpeg)
+
 ![CI Status](https://github.com/VoidCanary-Lab/airlock/actions/workflows/gateware-verify.yml/badge.svg)
 ![License](https://img.shields.io/badge/License-GPLv3-blue.svg)
 
