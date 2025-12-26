@@ -4,18 +4,18 @@
 ---
 - name: Configure Gateway
   hosts: gateway
-  become: yes
+  become: true
   tasks:
     - name: Install Cloudflared
-      apt:
+      ansible.builtin.apt:
         name: cloudflared
         state: present
 
 - name: Configure Vault
   hosts: vault
-  become: yes
+  become: true
   tasks:
     - name: Install Wazuh Agent
-      apt:
+      ansible.builtin.apt:
         name: wazuh-agent
         state: present
