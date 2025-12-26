@@ -98,13 +98,21 @@ class SecurityAirlock(Elaboratable):
                 m.d.sync += self.violation_wg_size.eq(0)
                 m.d.sync += self.violation_plaintext.eq(0)
                 m.d.sync += self.violation_ethertype.eq(0)
+                
+                # Clear drop_current immediately so the first byte of the next packet isn't dropped
+                m.d.sync += self.drop_current.eq(0)
+
+                # If packet ends before byte 13 (14 bytes), it bypassed header checks.
+                with m.If(byte_ptr < 13):
+                    m.d.sync += self.violation_ethertype.eq(1)
             with m.Else():
-                m.d.sync += byte_ptr.eq(byte_ptr + 1)
+                # Prevent byte_ptr wrap-around on giant packets to avoid interpreting payload as headers
+                with m.If(byte_ptr < 0xFFFF):
+                    m.d.sync += byte_ptr.eq(byte_ptr + 1)
 
             # Capture Unicast/Multicast at Byte 0 (LSB of 1st byte: 0=Unicast, 1=Multicast)
             with m.If(byte_ptr == 0):
                 m.d.sync += self.is_unicast.eq(~self.rx_data[0])
-                m.d.sync += self.drop_current.eq(0)
 
             # --- 4. Filtering Logic ---
             with m.If(volume_cnt >= self.VOLUME_LIMIT):
@@ -180,7 +188,11 @@ class SecurityAirlock(Elaboratable):
                 self.violation_ethertype.eq(0),
                 self.drop_current.eq(0),
                 self.watchdog_timer.eq(self.HEARTBEAT_TIMEOUT),
-                volume_cnt.eq(0)
+                volume_cnt.eq(0),
+                # Reset state pointers to prevent desynchronization on resume
+                byte_ptr.eq(0),
+                is_ip.eq(0),
+                plaintext_cnt.eq(0)
             ]
 
         return m
