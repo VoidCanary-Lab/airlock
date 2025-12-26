@@ -18,7 +18,7 @@ def run_attacker(interface, traffic_type):
     elif traffic_type == "TTL":
         pkt = Ether(dst=dst_mac) / IP(dst="192.168.100.2", ttl=50) / UDP(dport=1234) / Raw(load="TTL_VIOLATION")
     elif traffic_type == "PLAINTEXT":
-        pkt = Ether(dst=dst_mac) / IP(dst="192.168.100.2") / UDP(dport=1234) / Raw(load="PLAINTEXT_VIOLATION")
+        pkt = Ether(dst=dst_mac) / IP(dst="192.168.100.2") / UDP(dport=1234) / Raw(load="PLAINTEXT_VIOLATION_DETECTED_BY_AIRLOCK_FILTER")
 
     # Send a burst to ensure capture
     for _ in range(3):

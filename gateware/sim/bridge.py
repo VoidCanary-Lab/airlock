@@ -43,7 +43,8 @@ def run_bridge(rx_interface, tx_interface):
 
     def simulation_process():
         yield dut.rx_valid.eq(0)
-        yield dut.ingress.eq(1) # Default to Ingress (Outside -> Inside) for this bridge
+        yield dut.egress_mode.eq(0) # Default to Ingress (Outside -> Inside) for this bridge
+        yield dut.tx_ready.eq(1) # Always ready to transmit in this bridge simulation
         
         print(f"[*] Listening on {rx_interface}...", flush=True)
         # Ensure interface is in promiscuous mode to capture all traffic
@@ -80,7 +81,6 @@ def run_bridge(rx_interface, tx_interface):
                         yield dut.rx_data.eq(byte)
                         yield dut.rx_valid.eq(1)
                         yield dut.rx_last.eq(i == len(raw_bytes) - 1)
-                        yield Tick()
                         yield Settle()
 
                         if DEBUG:
@@ -90,10 +90,11 @@ def run_bridge(rx_interface, tx_interface):
 
                         if (yield dut.tx_valid):
                             output_buffer.append((yield dut.tx_data))
+                        
+                        yield Tick()
 
                     yield dut.rx_valid.eq(0)
                     yield Tick()
-                    yield Settle()
                     
                     is_locked = (yield dut.status_led) == 0
 
@@ -107,7 +108,10 @@ def run_bridge(rx_interface, tx_interface):
                             print(f"[!] FORWARDING TRUNCATED Packet (Drop Active)", flush=True)
                         else:
                             print(f"[>] FORWARDING Packet to {tx_interface}", flush=True)
-                        tx_socket.send(bytes(output_buffer))
+                        try:
+                            tx_socket.send(bytes(output_buffer))
+                        except OSError as e:
+                            print(f"[!] OS rejected packet send (len={len(output_buffer)}): {e}", flush=True)
                     else:
                         print(f"[!] DROPPING Packet (Locked: {is_locked})", flush=True)
             

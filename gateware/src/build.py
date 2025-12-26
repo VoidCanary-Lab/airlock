@@ -30,7 +30,8 @@ def build():
             f.write(verilog.convert(top, ports=[
                 top.rx_data, top.rx_valid, top.rx_last, top.rx_ready,
                 top.tx_data, top.tx_valid, top.tx_last, top.tx_ready,
-                top.heartbeat_in, top.rst_lock, top.status_led
+                top.heartbeat_in, top.rst_lock, top.status_led,
+                top.ingress
             ]))
 
 if __name__ == "__main__":

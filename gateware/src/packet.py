@@ -21,7 +21,7 @@ class SecurityAirlock(Elaboratable):
         self.heartbeat_in = Signal() # Input from GPIO/SPI (VPS SPIHash)
         self.rst_lock     = Signal() # Manual Reset Button
         self.status_led   = Signal() # ON = Traffic Flowing, OFF = Locked
-        self.ingress      = Signal(reset=1) # 1=From Outside (Ingress), 0=From Inside (Egress)
+        self.egress_mode  = Signal() # 0=Ingress (Secure/Default), 1=Egress (Permissive)
 
         # --- Internal State ---
         self.locked = Signal()
@@ -31,7 +31,11 @@ class SecurityAirlock(Elaboratable):
         self.violation_plaintext = Signal()
         self.violation_heartbeat = Signal()
         self.violation_ethertype = Signal()
-        self.is_unicast          = Signal()
+        self.violation_arp_rate  = Signal()
+        self.violation_ip_proto  = Signal()
+        self.violation_arp_size  = Signal()
+        self.violation_frag      = Signal()
+        self.violation_ip_options = Signal()
         self.drop_current        = Signal()
         
         self.HEARTBEAT_TIMEOUT = heartbeat_timeout
@@ -43,47 +47,92 @@ class SecurityAirlock(Elaboratable):
 
         # --- Internal State ---
         volume_cnt = Signal(27)
-        byte_ptr = Signal(16) 
+        byte_ptr = Signal(17) 
         
         # Reset Synchronization State
         # Start in flush mode to ensure we don't process a packet mid-stream
-        flush_state = Signal(reset=1)
+        flush_state = Signal(init=1)
         
         # IP Header Fields
         is_ip = Signal()
         ip_len = Signal(16)
-        ip_hdr_len = Signal(4)
+        ip_hdr_len = Signal(4, init=5)
         ttl = Signal(8)
         
-        plaintext_cnt = Signal(4)
+        # ARP Rate Limiter State
+        is_arp = Signal()
+        arp_bucket = Signal(16)
+        arp_leak_timer = Signal(14)
+        ARP_LEAK_INTERVAL = 10000 # 25MHz / 2500 Bps (20kbps)
+        ARP_BURST_LIMIT = 4000
+        
+        plaintext_cnt = Signal(8)
 
         # Consolidate violations
         traffic_violation = Signal()
-        m.d.comb += traffic_violation.eq(self.violation_volume | self.violation_ttl | self.violation_wg_size | self.violation_plaintext | self.violation_ethertype)
+        m.d.comb += traffic_violation.eq(self.violation_volume | self.violation_ttl | self.violation_wg_size | self.violation_plaintext | self.violation_ethertype | self.violation_arp_rate | self.violation_ip_proto | self.violation_arp_size | self.violation_frag | self.violation_ip_options)
 
         # --- Combinatorial Violation Detection (Anti-Leakage) ---
         # Detect violations on the current cycle to gate TX immediately.
         
         # 1. EtherType Check (Byte 13)
-        comb_violation_ethertype = (byte_ptr == 13) & (~is_ip | (self.rx_data != 0x00))
+        # Allow IPv4 (0x0800) and ARP (0x0806). is_ip is set if Byte 12 was 0x08.
+        comb_violation_ethertype = (byte_ptr == 13) & (~is_ip | ((self.rx_data != 0x00) & (self.rx_data != 0x06)))
 
         # 2. TTL Check (Byte 22)
         comb_violation_ttl = is_ip & (byte_ptr == 22) & (self.rx_data < 60)
         
         # 3. WG Size Check (End of IP Header)
         header_end_ptr = (14 + (ip_hdr_len << 2) - 1)
-        comb_violation_wg_size = is_ip & (byte_ptr == header_end_ptr) & (byte_ptr > 14) & (ip_len < 32)
+        # Check at calculated end pointer OR if packet ends prematurely (Runt/Bypass)
+        # Also check for Trailing Garbage (Physical > Logical Length) to prevent injection
+        # Check for Truncated Packets (Physical < Logical Length) at rx_last
+        # Adjusted min size to 28 (20 IP + 8 UDP) to allow empty UDP packets.
+        comb_violation_wg_size = is_ip & (
+            ((ip_len < 28) & (((byte_ptr == header_end_ptr) & (byte_ptr > 14)) | self.rx_last)) |
+            ((byte_ptr > 17) & (byte_ptr >= (14 + ip_len)) & (byte_ptr >= 64)) |
+            (self.rx_last & (byte_ptr < (14 + ip_len - 1)))
+        )
         
         # 4. Plaintext Check (Immediate block if count reached limit)
-        comb_violation_plaintext = (plaintext_cnt >= 10)
+        # Check current byte printability.
+        # Increased limit to 128 to allow TLS SNI (Server Name Indication) and Cloudflare UUIDs.
+        is_printable = ((self.rx_data >= 0x20) & (self.rx_data <= 0x7E)) | (self.rx_data == 0x0A) | (self.rx_data == 0x0D) | (self.rx_data == 0x09)
+        # Apply plaintext check to ARP packets to prevent padding exfiltration
+        comb_violation_plaintext = (is_ip | is_arp) & (plaintext_cnt >= 128) & is_printable
         
         # 5. Volume Limit
         comb_violation_volume = (volume_cnt >= self.VOLUME_LIMIT)
         
+        # 6. ARP Rate Limit
+        comb_violation_arp_rate = is_arp & (arp_bucket >= ARP_BURST_LIMIT)
+
+        # 7. Protocol Check (Byte 23) - Allow TCP (0x06) and UDP (0x11) ONLY
+        comb_violation_protocol = is_ip & (byte_ptr == 23) & (self.rx_data != 0x06) & (self.rx_data != 0x11)
+        
+        # 8. ARP Size Check (Hardened)
+        # Block ARP packets larger than 64 bytes (Min Eth Frame + FCS) to prevent tunneling/overflows.
+        comb_violation_arp_size = is_arp & (byte_ptr > 63)
+        
+        # 9. Fragmentation Check (Bytes 20 & 21)
+        # Block MF flag (0x20 in Byte 20) and any Fragment Offset.
+        # Byte 20 mask 0x3F covers MF (0x20) and top 5 bits of offset (0x1F).
+        comb_violation_frag = is_ip & (((byte_ptr == 20) & ((self.rx_data & 0x3F) != 0)) | ((byte_ptr == 21) & (self.rx_data != 0)))
+
+        # 10. IP Options Check (Byte 14)
+        # Enforce IHL == 5 (20 bytes). Any options (IHL > 5) are blocked.
+        comb_violation_ip_options = is_ip & (byte_ptr == 14) & ((self.rx_data & 0x0F) > 5)
+
         violation_now = Signal()
-        m.d.comb += violation_now.eq(comb_violation_ethertype | comb_violation_ttl | comb_violation_wg_size | comb_violation_plaintext | comb_violation_volume)
+        # Gate combinatorial checks with rx_valid to prevent false positives on idle bus noise
+        m.d.comb += violation_now.eq((comb_violation_ethertype | comb_violation_ttl | comb_violation_wg_size | comb_violation_plaintext | comb_violation_volume | comb_violation_arp_rate | comb_violation_protocol | comb_violation_arp_size | comb_violation_frag | comb_violation_ip_options) & self.rx_valid)
 
         # --- 1. Global Lock Logic ---
+        
+        # Fate Sharing Prevention
+        # Determine if we have a violation NOW (Combinatorial) or from previous cycles (Registered)
+        any_violation = traffic_violation | violation_now
+        
         with m.If(self.rst_lock):
             m.d.sync += self.locked.eq(0)
             m.d.sync += self.drop_current.eq(0)
@@ -91,39 +140,47 @@ class SecurityAirlock(Elaboratable):
         with m.Elif(self.violation_heartbeat):
             # Heartbeat failure is a system integrity issue; always lock.
             m.d.sync += self.locked.eq(1)
-        with m.Elif(traffic_violation):
-            # Lock ONLY if Unicast AND coming from Outside. Otherwise, just drop the packet.
-            with m.If(self.ingress & self.is_unicast):
+        with m.Elif(any_violation):
+            # Lock on ANY Ingress violation (Unicast OR Multicast).
+            # If firewall is hacked, we cannot trust Multicast traffic. Fail Closed.
+            with m.If(~self.egress_mode):
                 m.d.sync += self.locked.eq(1)
             with m.Else():
-                m.d.sync += self.drop_current.eq(1)
+                # Only drop the rest of the packet if the packet is not ending right now.
+                # If it is finishing, we successfully dropped the last byte (via gate_tx) and we are done.
+                with m.If(~self.rx_last):
+                    m.d.sync += self.drop_current.eq(1)
 
         m.d.comb += self.status_led.eq(~self.locked)
 
         # --- 2. Traffic Flow Control ---
-        tx_ready_internal = Signal()
-        m.d.comb += self.tx_ready.eq(tx_ready_internal)
-        m.d.comb += tx_ready_internal.eq(1)
+        # Gate TX with Reset and immediate violation signals
+        
+        # AXI Stream Compliance (Packet Smuggling Prevention)
+        force_terminate = (self.drop_current | violation_now) & self.rx_last & ~self.locked
+
+        gate_tx = self.locked | self.drop_current | self.rst_lock | flush_state | traffic_violation | self.violation_heartbeat | violation_now
 
         m.d.comb += [
-            self.tx_data.eq(self.rx_data),
-            # Gate TX with Reset and immediate violation signals to reduce leakage latency and prevent bypass
-            self.tx_valid.eq(
-                self.rx_valid & 
-                ~self.locked & 
-                ~self.drop_current & 
-                ~self.rst_lock & 
-                ~flush_state &
-                ~traffic_violation & 
-                ~self.violation_heartbeat & 
-                ~violation_now
-            ),
+            self.tx_data.eq(Mux(force_terminate, 0, self.rx_data)),
+            self.tx_valid.eq((self.rx_valid & ~gate_tx) | force_terminate),
             self.tx_last.eq(self.rx_last),
-            self.rx_ready.eq(1)
+            # RX Ready Logic:
+            # We are ready if Downstream is ready OR if we are effectively dropping/sinking the data.
+            # This ensures we don't block the upstream if we are just discarding packets.
+            self.rx_ready.eq(self.tx_ready | gate_tx)
         ]
 
         # --- 3. Packet Processing Loop ---
-        with m.If(self.rx_valid & ~self.locked):
+        # Only process state updates when a valid handshake occurs (Fire)
+        rx_fire = self.rx_valid & self.rx_ready
+        
+        # Smart Flush: If line is idle (rx_valid=0), assume safe to sync.
+        # This prevents dropping the first packet on a clean startup.
+        with m.If(flush_state & ~self.rx_valid):
+            m.d.sync += flush_state.eq(0)
+        
+        with m.If(rx_fire & ~self.locked):
             m.d.sync += volume_cnt.eq(volume_cnt + 1)
             
             with m.If(flush_state):
@@ -132,58 +189,106 @@ class SecurityAirlock(Elaboratable):
                     m.d.sync += flush_state.eq(0)
                     m.d.sync += byte_ptr.eq(0)
                     m.d.sync += is_ip.eq(0)
+                    m.d.sync += ip_len.eq(0)
                     m.d.sync += plaintext_cnt.eq(0)
                     m.d.sync += self.violation_ttl.eq(0)
                     m.d.sync += self.violation_wg_size.eq(0)
                     m.d.sync += self.violation_plaintext.eq(0)
                     m.d.sync += self.violation_ethertype.eq(0)
+                    m.d.sync += self.violation_arp_rate.eq(0)
+                    m.d.sync += self.violation_ip_proto.eq(0)
+                    m.d.sync += self.violation_arp_size.eq(0)
+                    m.d.sync += self.violation_frag.eq(0)
+                    m.d.sync += self.violation_ip_options.eq(0)
+                    m.d.sync += is_arp.eq(0)
                     m.d.sync += self.drop_current.eq(0)
             
             with m.Elif(self.rx_last):
                 m.d.sync += byte_ptr.eq(0)
                 m.d.sync += is_ip.eq(0)
+                m.d.sync += ip_len.eq(0)
                 m.d.sync += plaintext_cnt.eq(0)
+                m.d.sync += ip_hdr_len.eq(5)
                 # Clear per-packet violations so they don't taint the next packet
                 m.d.sync += self.violation_ttl.eq(0)
                 m.d.sync += self.violation_wg_size.eq(0)
                 m.d.sync += self.violation_plaintext.eq(0)
                 m.d.sync += self.violation_ethertype.eq(0)
+                m.d.sync += self.violation_arp_rate.eq(0)
+                m.d.sync += self.violation_ip_proto.eq(0)
+                m.d.sync += self.violation_arp_size.eq(0)
+                m.d.sync += self.violation_frag.eq(0)
+                m.d.sync += self.violation_ip_options.eq(0)
+                m.d.sync += is_arp.eq(0)
                 
                 # Clear drop_current immediately so the first byte of the next packet isn't dropped
                 m.d.sync += self.drop_current.eq(0)
 
+                # Check for Truncation at rx_last and Lock if Ingress.
+                is_truncated = is_ip & (byte_ptr < (14 + ip_len - 1))
+                with m.If(is_truncated):
+                    m.d.sync += self.violation_wg_size.eq(1)
+                    with m.If(~self.egress_mode):
+                        m.d.sync += self.locked.eq(1)
+                with m.Else():
+                    m.d.sync += self.violation_wg_size.eq(0)
+
                 # If packet ends before byte 13 (14 bytes), it bypassed header checks.
                 with m.If(byte_ptr < 13):
-                    m.d.sync += self.violation_ethertype.eq(1)
+                    # Direct Lock Check for Runt Packets to avoid Fate Sharing with next packet
+                    # Lock on ANY Ingress Runt to prevent bypass attempts
+                    with m.If(~self.egress_mode):
+                        m.d.sync += self.locked.eq(1)
             with m.Else():
                 # Prevent byte_ptr wrap-around on giant packets to avoid interpreting payload as headers
-                with m.If(byte_ptr < 0xFFFF):
+                with m.If(byte_ptr < 0x1FFFF):
                     m.d.sync += byte_ptr.eq(byte_ptr + 1)
 
-            # Capture Unicast/Multicast at Byte 0 (LSB of 1st byte: 0=Unicast, 1=Multicast)
-            with m.If(byte_ptr == 0):
-                m.d.sync += self.is_unicast.eq(~self.rx_data[0])
-
             # --- 4. Filtering Logic ---
-            with m.If(comb_violation_volume):
+            with m.If(comb_violation_volume & ~self.rx_last):
                 m.d.sync += self.violation_volume.eq(1)
 
             # Check for EtherType 0x0800 (IPv4)
-            with m.If((byte_ptr == 12) & (self.rx_data == 0x08)):
+            with m.If((byte_ptr == 12) & (self.rx_data == 0x08) & ~self.rx_last):
                 m.d.sync += is_ip.eq(1)
-            with m.If(byte_ptr == 13):
+            with m.If((byte_ptr == 13) & ~self.rx_last):
                 with m.If(self.rx_data != 0x00):
                     m.d.sync += is_ip.eq(0)
                 
                 # Strict IPv4 Check: If not 0x0800, trigger violation (which may Lock or Drop based on direction)
                 with m.If(comb_violation_ethertype):
                     m.d.sync += self.violation_ethertype.eq(1)
+                
+                # Detect ARP (0x0806). is_ip was set if Byte 12 was 0x08.
+                with m.If(is_ip & (self.rx_data == 0x06)):
+                    m.d.sync += is_arp.eq(1)
+
+            # ARP Rate Limiting (Accumulate)
+            with m.If(is_arp):
+                with m.If(arp_bucket < 0xFFFF):
+                    m.d.sync += arp_bucket.eq(arp_bucket + 1)
+                with m.If(comb_violation_arp_rate & ~self.rx_last):
+                    m.d.sync += self.violation_arp_rate.eq(1)
+
+            # ARP Size Check
+            with m.If(comb_violation_arp_size & ~self.rx_last):
+                m.d.sync += self.violation_arp_size.eq(1)
 
             # IP Packet Processing
             with m.If(is_ip):
                 # IHL is at byte 14
                 with m.If(byte_ptr == 14):
+                    # Explicitly check IP Version (IPv4=4) to prevent 0x0800 spoofing
+                    with m.If((self.rx_data[4:8] != 4) & ~self.rx_last):
+                        m.d.sync += self.violation_ethertype.eq(1)
+
                     m.d.sync += ip_hdr_len.eq(self.rx_data & 0x0F)
+                    # Validate Minimum IHL (5 words / 20 bytes)
+                    with m.If(((self.rx_data & 0x0F) < 5) & ~self.rx_last):
+                        m.d.sync += self.violation_wg_size.eq(1)
+                    # Validate Maximum IHL (No Options allowed)
+                    with m.If(comb_violation_ip_options & ~self.rx_last):
+                        m.d.sync += self.violation_ip_options.eq(1)
                 
                 # Total Length is at bytes 16 and 17
                 with m.If(byte_ptr == 16):
@@ -194,24 +299,40 @@ class SecurityAirlock(Elaboratable):
                 # TTL is at byte 22
                 with m.If(byte_ptr == 22):
                     m.d.sync += ttl.eq(self.rx_data)
-                    with m.If(comb_violation_ttl):
+                    with m.If(comb_violation_ttl & ~self.rx_last):
                         m.d.sync += self.violation_ttl.eq(1)
                 
-                # Use IHL to determine end of IP header
-                with m.If((byte_ptr == (14 + ip_hdr_len * 4 -1)) & (byte_ptr > 14)):
-                    with m.If(comb_violation_wg_size): # Check for tiny packets
-                        m.d.sync += self.violation_wg_size.eq(1)
+                # Check for WG Size Violation (Header End OR Runt)
+                with m.If(comb_violation_wg_size & ~self.rx_last):
+                    m.d.sync += self.violation_wg_size.eq(1)
+
+                # Protocol Check (TCP/UDP Only)
+                with m.If(comb_violation_protocol & ~self.rx_last):
+                    m.d.sync += self.violation_ip_proto.eq(1)
+
+                # Fragmentation Check
+                with m.If(comb_violation_frag & ~self.rx_last):
+                    m.d.sync += self.violation_frag.eq(1)
 
                 # Plaintext check in payload
                 with m.If(byte_ptr > (14 + ip_hdr_len * 4 -1)):
-                    with m.If((self.rx_data >= 0x20) & (self.rx_data <= 0x7E)):
-                        with m.If(plaintext_cnt < 15):
+                    with m.If(is_printable):
+                        with m.If(plaintext_cnt < 255):
                             m.d.sync += plaintext_cnt.eq(plaintext_cnt + 1)
                     with m.Else():
-                        m.d.sync += plaintext_cnt.eq(0)
+                        # Leaky Bucket instead of Reset
+                        with m.If(plaintext_cnt > 0):
+                            m.d.sync += plaintext_cnt.eq(plaintext_cnt - 1)
                     
-                    with m.If(comb_violation_plaintext):
+                    with m.If(comb_violation_plaintext & ~self.rx_last):
                         m.d.sync += self.violation_plaintext.eq(1)
+
+        # --- ARP Leaky Bucket Logic ---
+        m.d.sync += arp_leak_timer.eq(arp_leak_timer + 1)
+        with m.If(arp_leak_timer >= ARP_LEAK_INTERVAL):
+            m.d.sync += arp_leak_timer.eq(0)
+            with m.If(arp_bucket > 0):
+                m.d.sync += arp_bucket.eq(arp_bucket - 1)
 
         # --- 5. Watchdog (VPS Heartbeat) ---
         last_heartbeat = Signal()
@@ -236,12 +357,19 @@ class SecurityAirlock(Elaboratable):
                 self.violation_plaintext.eq(0),
                 self.violation_heartbeat.eq(0),
                 self.violation_ethertype.eq(0),
+                self.violation_arp_rate.eq(0),
+                self.violation_ip_proto.eq(0),
+                self.violation_arp_size.eq(0),
+                self.violation_frag.eq(0),
+                self.violation_ip_options.eq(0),
                 self.drop_current.eq(0),
                 self.watchdog_timer.eq(self.HEARTBEAT_TIMEOUT),
                 volume_cnt.eq(0),
+                arp_bucket.eq(0),
                 # Reset state pointers to prevent desynchronization on resume
                 byte_ptr.eq(0),
                 is_ip.eq(0),
+                is_arp.eq(0),
                 plaintext_cnt.eq(0)
             ]
 
