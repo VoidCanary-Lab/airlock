@@ -5,54 +5,49 @@
 ![CI Status](https://github.com/VoidCanary-Lab/airlock/actions/workflows/gateware-verify.yml/badge.svg)
 ![License](https://img.shields.io/badge/License-GPLv3-blue.svg)
 
-**Experimental research into formal verification of network state machines using Amaranth HDL.**
+**Correct-by-construction network security using Amaranth HDL.**
 
-## Abstract
-Airlock is a gateware research project exploring the application of Python-based Hardware Description Languages (HDL) to create a hardware-based security airlock. The `SecurityAirlock` module provides a set of formally verifiable security features to protect a network segment.
+## Overview
+Airlock is an FPGA-based hardware security research project. It moves security policy enforcement from the OS Kernel (Software) to the Gateware (Hardware).
 
-The primary goal is to demonstrate how Bounded Model Checking (BMC) can be used to mathematically prove that the airlock's security policies are correctly implemented.
+By defining packet processing logic in Amaranth HDL, Airlock allows us to use **Bounded Model Checking (BMC)** to mathematically prove that security rules—like volume limits or protocol checks—cannot be bypassed, regardless of OS vulnerabilities.
 
-## Features
-- **Volume Limiting:** The airlock will lock down after a certain volume of traffic has passed.
-- **TTL Enforcement:** Packets with a low TTL are dropped to prevent traceroute and other network mapping techniques.
-- **WireGuard Heuristics:** The airlock can detect and block small, suspicious UDP packets that may indicate a covert channel.
-- **Heartbeat Monitoring:** A hardware-level watchdog timer ensures the airlock is not bypassed by a compromised host.
-- **Formal Verification:** The core security properties of the airlock are formally verified using SymbiYosys.
+## Why Airlock? (The Motivation)
+Traditional firewalls operate in software (Kernel/OS). This architecture has a fundamental flaw: **The firewall shares the same physical resources (CPU/RAM) as the attack surface.** If the OS kernel is compromised (e.g., a Zero-Day in the TCP/IP stack), the firewall is bypassed instantly.
 
-## Architecture
+**Airlock is the answer to "Kernel-Bypass" attacks.**
+By moving the security logic into an FPGA (Field-Programmable Gate Array), we achieve:
 
-This project implements a "Virtual Bridge" for development, allowing the `SecurityAirlock` gateware to be simulated and verified against real network traffic.
+1.  **Physical Isolation:** The filtering logic runs on dedicated silicon, physically separate from the Gateway OS.
+2.  **Zero-Day Immunity:** A bug in the Linux Kernel cannot crash the FPGA. The gateware keeps filtering even if the host OS panics.
+3.  **Mathematical Certainty:** Unlike C/C++ code, our hardware logic is formally verified. We don't just *think* it works; we *prove* it drops the packet.
+
+**This is not just a faster firewall. It is a different state of matter for network security.**
+
+## Reference Topology
+The FPGA acts as a physical gatekeeper. The filtering logic operates at wire speed, ensuring only valid, safe traffic reaches the internal gateway.
 
 ```text
-ZONE 0: HOSTILE INTERNET     ZONE 1: THE AIRLOCK (FPGA)  ZONE 2: GATEWAY VM
-+--------------------------+ +---------------------------+ +--------------+
-|                          | |                           | |              |
-| [ VPS CONTROL ]          | |   [ WATCHDOG LOGIC ]      | |              |
-|                          | | If Pulse OK: Switch=ON    | |              |
-|                          | | If Pulse NO: Switch=OFF   | |              |
-|                          | |                           | |              |
-|                          | |                           | |              |
-|                          | |                           | |              |
-| "I am alive!" (SipHash)  | |    +-------+              | |              |
-|       |                  | |    |       |              | |              |
-|       +------------------------>| TIMER |              | |              |
-|         (Control Flow)   | |    +---+---+              | |              |
-|                          | |        |                  | |              |
-|                          | |        v                  | |              |
-+--------------------------+ |      /   \<-- KILL SWITCH | |              |
-|                          | |     /  O  \    (Hardware) | |              |
-| [ USER TRAFFIC ]         | |    /       \              | |              |
-|                          | |   | Status  |             | |              |
-|       |                  | |   | ON/OFF  |             | |              |
-|       |                  | |   +----+----+             | |              |
-|       | (Data Flow)      | |                           | |              |
-|       |                  | |                           | |              |
-| +---------------------+  | |    +-------+              | | +----------+ |
-| |(Encrypted WireGuard)|<--------| DATA  |<-----------------| WireGuard| |
-| +---------------------+  | |    |FILTER |(Check: TTL,  | | | Ecrypted | |    
-|                          | |    +-------+ Size, Speed) | | +-------+--+ |
-+--------------------------+ +---------------------------+ |         |    |
-                                                           +---------+----+
+ZONE 0: HOSTILE INTERNET        ZONE 2: THE AIRLOCK (FPGA)     ZONE 3: GATEWAY VM
++--------------------------+    +---------------------------+    +--------------+
+|       USER TRAFFIC       |    |                           |    |              |
+| +---------------------+  |    |   [ SECURITY STATE ]      |    |              |
+| |(Encrypted WireGuard)|  |    |   (Internal Watchdog)     |    |              |
+| +-----+---------------+  |    |                           |    |              |
++-------|------------------+    |                           |    |    DEBIAN    |
+        |                       |                           |    |              |
+        |                       |   +--------+              |    |              |
+        | ZONE 1: FW            |   | STATUS |              |    |              |
++-------|------------------+    |   | ON/OFF |   NO OS      |    |              |
+|       | DEBIAN(IPTABLES) |    |   +----+---+   NO KERNEL  |    |              |
+|       |                  |    |        |     0-DAY IMMUNE |    |              |
+|       | (Data Flow)      |    |        v                  |    |              |
+|       |                  |IPv4|    +-------+              |IPv4| +----------+ |
+|       +----------------------------| DATA  |<------------------| | WireGuard| |
+|                          |UDP |    |FILTER |(Check: TTL,  |UDP | | Encrypted| |    
+|                          |HTTPS|   +-------+ Size, Speed) |HTTPS|+-+--------+ |
++--------------------------+    +---------------------------+    |   |          |
+                                                                 +---|----------+
                                                                      |
                                                      (Decrypted IP)  | 
                                                                      ^
@@ -63,38 +58,53 @@ ZONE 5: INTERNAL SERVICES    ZONE 4: SECURITY STACK (The Filter)     |
 | [ SENSITIVE APPS ]  |     |   |   IPTABLES   |-->|   PI-HOLE   |   | |
 | - Database          |     |   |  (Firewall)  |   |             | --+ |
 | - Git Repos         |-------->|              |   +------+------+     |
-| - Wiki              |     |   +--------------+                       |
-|                     |     |                                          |
+|                     |     |   +--------------+                       |
 |                     |     |                      +-------------+     |
-|                     |     |                      |     MDR     |     |
+|                     |     |     DEBIAN           |     MDR     |     |
 |                     |     |                      |(Wazuh-agent)|     |
 |                     |     |                      +-------------+     |
-+---------------------+     |                                          |
-                            +------------------------------------------+
++---------------------+     +------------------------------------------+
 ```
 
-### Repository Structure
- * `gateware/`: Core Amaranth HDL source code for the `SecurityAirlock`.
- * `infrastructure/`: Infrastructure-as-Code (Terraform/Ansible) for the test bench topology.
- * `verify/`: Formal proofs and assertions (SymbiYosys).
 
-### Getting Started (Simulation)
-This project requires Python 3.10+ and the Amaranth toolchain.
-```bash
+## Key Capabilities
+
+The Silicon Shield (Anti-Reconnaissance): Airlock enforces strict TTL floors and protocol compliance at the byte level. Scanners like nmap see a black hole. We don't just drop packets; we erase their existence.
+
+Volumetric Lockdown: Automatically severs connections after specific data thresholds are exceeded, preventing data exfiltration even if encryption keys are stolen.
+
+The Logic Lock (Formal Verification): We use SymbiYosys to prove our code. Example Assertion: "It is mathematically impossible for a packet with Source IP X to appear at Output Y."
+
+The Kill Switch (Hardware Watchdog): A dead-man's switch for your network. The FPGA monitors the host's "heartbeat." If the host is compromised or crashes, the FPGA physically cuts the line. No software can override this.
+
+## Quick Start (Simulation)
+
+You can simulate the hardware logic on a standard Linux machine using the Python Bridge. This creates a virtual TAP interface that passes traffic through the Amaranth gateware code.
+
+Bash
+
+```
 # 1. Install dependencies
 pip install -r requirements.txt
+```
 
-# 2. Run the Virtual Bridge (Requires Root for TAP creation)
+## 2. Run the Virtual Bridge (Requires Root for TAP creation)
+```
 sudo python3 gateware/sim/bridge.py --rx tap0 --tx tap1
 ```
 
-### Formal Verification
-To run the formal proofs against the gateware logic:
-```bash
+## 3.Verification
+
+
+To execute the formal proofs and verify the state machine properties:
+
+Bash
+
+```
 cd gateware/verify
 python3 proof.py
 ```
 
-## License
-Copyright (c) 2025 VoidCanary-Lab.
-This project is licensed under the GNU General Public License v3.0.
+## 4.License
+
+Copyright (c) 2025 VoidCanary-Lab. Licensed under the GNU General Public License v3.0.
