@@ -1,0 +1,21 @@
+# Copyright (c) 2025 VoidCanary-Lab
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: Infrastructure Lint
+
+on: [push, pull_request]
+
+jobs:
+  terraform-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: hashicorp/setup-terraform@v2
+      - run: terraform fmt -check -recursive infrastructure/terraform
+
+  ansible-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run ansible-lint
+        uses: ansible/ansible-lint@main

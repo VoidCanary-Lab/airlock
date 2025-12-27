@@ -1,0 +1,21 @@
+# Copyright (c) 2025 VoidCanary-Lab
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+---
+- name: Configure Gateway
+  hosts: gateway
+  become: true
+  tasks:
+    - name: Install Cloudflared
+      ansible.builtin.apt:
+        name: cloudflared
+        state: present
+
+- name: Configure Vault
+  hosts: vault
+  become: true
+  tasks:
+    - name: Install Wazuh Agent
+      ansible.builtin.apt:
+        name: wazuh-agent
+        state: present
