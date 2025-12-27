@@ -4,8 +4,7 @@
 import sys
 import os
 from amaranth import *
-from amaranth import Assert, Cover, Past
-from amaranth.sim import Simulator
+from amaranth import Assert, Cover
 from amaranth.back import verilog
 
 # Ensure we can import from the root workspace
@@ -18,9 +17,10 @@ class FormalProof(Elaboratable):
         m.submodules.dut = dut = SecurityAirlock(heartbeat_timeout=10)
 
         # --- Helper Signals ---
-        # Aggregate all traffic violations to ensure the "Global Security Policy" is enforced.
-        # We check Past() values because the DUT registers these errors.
-        any_traffic_violation = (
+        
+        # 1. Aggregate Violations (Current Cycle)
+        any_traffic_violation = Signal()
+        m.d.comb += any_traffic_violation.eq(
             dut.violation_volume | 
             dut.violation_ttl | 
             dut.violation_wg_size | 
@@ -39,18 +39,42 @@ class FormalProof(Elaboratable):
             dut.violation_frag
         )
 
+        # 2. Create Explicit "Past" Signals
+        # Since 'Past()' is deprecated, we manually create registers that lag by one cycle.
+        locked_d              = Signal.like(dut.locked)
+        violation_heartbeat_d = Signal.like(dut.violation_heartbeat)
+        any_traffic_violation_d = Signal.like(any_traffic_violation)
+        egress_mode_d         = Signal.like(dut.egress_mode)
+        watchdog_timer_d      = Signal.like(dut.watchdog_timer)
+        heartbeat_in_d        = Signal.like(dut.heartbeat_in)
+
+        # 3. Update "Past" Signals in Sync
+        # At cycle 't', these assignments capture the value for use in cycle 't+1'.
+        # Therefore, reading *_d in cycle 't' gives us the value from 't-1'.
+        m.d.sync += [
+            locked_d.eq(dut.locked),
+            violation_heartbeat_d.eq(dut.violation_heartbeat),
+            any_traffic_violation_d.eq(any_traffic_violation),
+            egress_mode_d.eq(dut.egress_mode),
+            watchdog_timer_d.eq(dut.watchdog_timer),
+            heartbeat_in_d.eq(dut.heartbeat_in),
+        ]
+
         # --- Formal Properties ---
 
         # 1. Security Response Logic
-        # If a violation occurred in the previous cycle, we must immediately see a Lock or Drop.
-        with m.If(~Past(dut.locked)):
+        # "If a violation occurred in the previous cycle (checked via *_d signals),
+        # we must immediately see a Lock or Drop in the current cycle."
+        
+        # Note: We check ~locked_d to ensure we catch the transition from Unlocked -> Locked
+        with m.If(~locked_d):
             # Heartbeat failure takes priority
-            with m.If(Past(dut.violation_heartbeat)):
+            with m.If(violation_heartbeat_d):
                 m.d.comb += Assert(dut.locked)
             
             # Traffic violations
-            with m.Elif(Past(any_traffic_violation)):
-                with m.If(~Past(dut.egress_mode)):
+            with m.Elif(any_traffic_violation_d):
+                with m.If(~egress_mode_d):
                     m.d.comb += Assert(dut.locked)
                 with m.Else():
                     m.d.comb += Assert(dut.drop_current)
@@ -68,12 +92,13 @@ class FormalProof(Elaboratable):
         # 3. Watchdog Timer Logic
         # Verify timer decrements correctly and triggers violation at 0.
         with m.If(~dut.rst_lock):
-            with m.If(Past(dut.watchdog_timer) > 0):
-                 # If heartbeat input hasn't toggled
-                 with m.If(Past(dut.heartbeat_in) == dut.heartbeat_in):
-                    m.d.comb += Assert(dut.watchdog_timer == Past(dut.watchdog_timer) - 1)
+            # Check against 'watchdog_timer_d' (the value from the previous cycle)
+            with m.If(watchdog_timer_d > 0):
+                 # If heartbeat input hasn't toggled since the last cycle
+                 with m.If(heartbeat_in_d == dut.heartbeat_in):
+                    m.d.comb += Assert(dut.watchdog_timer == watchdog_timer_d - 1)
             
-            with m.If(Past(dut.watchdog_timer) == 0):
+            with m.If(watchdog_timer_d == 0):
                 m.d.comb += Assert(dut.violation_heartbeat == 1)
 
         # 4. Reset Logic
