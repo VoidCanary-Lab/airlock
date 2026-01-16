@@ -1,0 +1,8 @@
+# Copyright (c) 2025 VoidCanary-Lab
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+amaranth
+scapy
+pytest
+pytest-xdist
+amaranth[builtin-yosys]>=0.5.0

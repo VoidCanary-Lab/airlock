@@ -1,0 +1,112 @@
+# Copyright (c) 2025 VoidCanary-Lab
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: End-to-End Topology Test
+
+on: [push, pull_request]
+
+jobs:
+  topology-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iproute2 bridge-utils net-tools ethtool
+
+      - name: Install Python Dependencies
+        run: sudo python3 -m pip install -r requirements.txt
+
+      - name: Setup Virtual Topology (The "Air Gap")
+        run: |
+          # Cleanup artifacts from previous runs to prevent "File exists" errors
+          sudo ip netns delete vault_ns 2>/dev/null || true
+          sudo ip link delete veth_in 2>/dev/null || true
+          sudo ip link delete veth_out 2>/dev/null || true
+
+          # 1. Create a Network Namespace for the Vault (Isolated)
+          sudo ip netns add vault_ns
+
+          # 2. Create Virtual Cables (veth pairs)
+          # Link A: External World <-> FPGA Input
+          sudo ip link add veth_in type veth peer name veth_in_peer
+          # Link B: FPGA Output <-> Vault
+          sudo ip link add veth_out type veth peer name veth_out_peer
+
+          # 3. Move one end of Link B into the Vault Namespace
+          sudo ip link set veth_out_peer netns vault_ns
+
+          # 4. Configure Interfaces (Disable IPv6 to prevent noise)
+          sudo sysctl -w net.ipv6.conf.veth_in.disable_ipv6=1
+          sudo sysctl -w net.ipv6.conf.veth_in_peer.disable_ipv6=1
+          sudo sysctl -w net.ipv6.conf.veth_out.disable_ipv6=1
+          sudo ip netns exec vault_ns sysctl -w net.ipv6.conf.all.disable_ipv6=1
+          # Disable Generic Receive Offload (GRO) to prevent packet aggregation issues
+          sudo ethtool -K veth_in_peer gro off
+
+          # 5. Bring up interfaces
+          sudo ip link set veth_in up
+          sudo ip link set veth_in_peer up
+          sudo ip link set veth_out up
+
+          # Inside the Vault, bring up the interface and assign IP
+          sudo ip netns exec vault_ns ip link set lo up
+          sudo ip netns exec vault_ns ip link set veth_out_peer up
+          sudo ip netns exec vault_ns ip addr add 192.168.100.2/24 dev veth_out_peer
+
+      - name: Start the Gateware Bridge (Background)
+        run: |
+          # This script reads from veth_in_peer, filters via Amaranth, writes to veth_out
+          sudo python3 gateware/sim/bridge.py --rx veth_in_peer --tx veth_out &
+          echo "BRIDGE_PID=$!" >> $GITHUB_ENV
+
+      - name: Run Attack Simulation
+        run: |
+          # 1. Start a listener inside the Vault (to see what gets through)
+          sudo ip netns exec vault_ns python3 -u infrastructure/tests/listener.py > capture.log &
+
+          # Restart the bridge to ensure a clean state (resetting any previous locks)
+          sudo pkill -f bridge.py || true
+          sleep 2
+          sudo python3 gateware/sim/bridge.py --rx veth_in_peer --tx veth_out &
+
+          # Wait for Bridge and Listener to initialize
+          sleep 20
+
+          # 2. Send GOOD traffic (Should pass)
+          sudo python3 infrastructure/tests/attacker.py --interface veth_in --type VALID
+
+          # Restart bridge to ensure clean state for bad traffic test
+          sudo pkill -f bridge.py || true
+          sleep 2
+          sudo python3 gateware/sim/bridge.py --rx veth_in_peer --tx veth_out &
+          sleep 5
+
+          # 3. Send BAD traffic (Should be dropped)
+          sudo python3 infrastructure/tests/attacker.py --interface veth_in --type TTL
+          sudo python3 infrastructure/tests/attacker.py --interface veth_in --type PLAINTEXT
+
+      - name: Verify Results
+        run: |
+          if grep -q "TTL" capture.log; then
+            echo "FAILURE: The Airlock leaked a TTL packet!"
+            exit 1
+          fi
+          if grep -q "PLAINTEXT_VIOLATION" capture.log; then
+            echo "FAILURE: The Airlock leaked a PLAINTEXT packet!"
+            exit 1
+          fi
+          if grep -q "VALID" capture.log; then
+            echo "SUCCESS: The Airlock passed valid traffic."
+            exit 0
+          else
+            echo "FAILURE: The Airlock blocked valid traffic (False Positive)."
+            exit 1
+          fi
