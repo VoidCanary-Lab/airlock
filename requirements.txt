@@ -3,3 +3,6 @@
 
 amaranth
 scapy
+pytest
+pytest-xdist
+amaranth[builtin-yosys]>=0.5.0

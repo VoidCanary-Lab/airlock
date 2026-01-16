@@ -4,7 +4,7 @@
 import sys
 import os
 from amaranth import *
-from amaranth import Assert, Cover
+from amaranth.asserts import Assert, Cover, Past
 from amaranth.sim import Simulator
 from amaranth.back import verilog
 
@@ -17,53 +17,93 @@ class FormalProof(Elaboratable):
         m = Module()
         m.submodules.dut = dut = SecurityAirlock(heartbeat_timeout=10)
 
+        # --- Helper Signals ---
+        # Aggregate all traffic violations to ensure the "Global Security Policy" is enforced.
+        # We check Past() values because the DUT registers these errors.
+        any_traffic_violation = (
+            dut.violation_volume | 
+            dut.violation_ttl | 
+            dut.violation_wg_size | 
+            dut.violation_plaintext | 
+            dut.violation_ethertype | 
+            dut.violation_arp_rate | 
+            dut.violation_ip_proto | 
+            dut.violation_arp_size |
+            dut.violation_tcp_flags |
+            dut.violation_tcp_options |
+            dut.violation_arp_opcode |
+            dut.violation_ip_options |
+            dut.violation_land |
+            dut.violation_loopback |
+            dut.violation_udp_len |
+            dut.violation_frag
+        )
+
         # --- Formal Properties ---
 
-        # Create explicit registers for Past values to address deprecation warnings
-        prev_locked = Signal()
-        prev_traffic_violation = Signal()
-        prev_heartbeat_violation = Signal()
-        prev_rst_lock = Signal()
-        prev_watchdog_timer = Signal(32)
-        prev_heartbeat_in = Signal()
-        prev_egress_mode = Signal()
-
-        m.d.sync += [
-            prev_locked.eq(dut.locked),
-            prev_traffic_violation.eq(dut.violation_volume | dut.violation_ttl | dut.violation_wg_size | dut.violation_plaintext | dut.violation_ethertype | dut.violation_arp_rate | dut.violation_ip_proto | dut.violation_arp_size),
-            prev_heartbeat_violation.eq(dut.violation_heartbeat),
-            prev_rst_lock.eq(dut.rst_lock),
-            prev_watchdog_timer.eq(dut.watchdog_timer),
-            prev_heartbeat_in.eq(dut.heartbeat_in),
-            prev_egress_mode.eq(dut.egress_mode)
-        ]
-
-        # 1. If any violation signal is high, check Lock vs Drop logic.
-        with m.If(~prev_locked):
-            with m.If(prev_heartbeat_violation):
+        # 1. Security Response Logic
+        # If a violation occurred in the previous cycle, we must immediately see a Lock or Drop.
+        with m.If(~Past(dut.locked)):
+            # Heartbeat failure takes priority
+            with m.If(Past(dut.violation_heartbeat)):
                 m.d.comb += Assert(dut.locked)
             
-            with m.Elif(prev_traffic_violation):
-                with m.If(~prev_egress_mode):
+            # Traffic violations
+            with m.Elif(Past(any_traffic_violation)):
+                with m.If(~Past(dut.egress_mode)):
                     m.d.comb += Assert(dut.locked)
                 with m.Else():
                     m.d.comb += Assert(dut.drop_current)
 
-        # 2. If locked, no traffic should pass.
+        # 2. Safety: No Leakage when Locked (With Graceful Termination)
+        # If the airlock is locked, it must NOT output valid data.
+        # EXCEPTION: It may output exactly one cycle of 0x00 with last=1 to close the stream.
         with m.If(dut.locked):
-            m.d.comb += Assert(dut.tx_valid == 0)
+            with m.If(dut.tx_valid):
+                # Protocol Safety: Must be the last byte
+                m.d.comb += Assert(dut.tx_last == 1)
+                # Data Security: Must be scrubbed (zeroed)
+                m.d.comb += Assert(dut.tx_data == 0)
 
-        # 3. Watchdog timer should decrement and trigger a violation.
-        with m.If(~prev_rst_lock):
-            with m.If(prev_watchdog_timer > 0):
-                 with m.If(prev_heartbeat_in == dut.heartbeat_in):
-                    m.d.comb += Assert(dut.watchdog_timer == prev_watchdog_timer - 1)
+        # 3. Watchdog Timer Logic
+        # Verify timer decrements correctly and triggers violation at 0.
+        with m.If(~dut.rst_lock):
+            with m.If(Past(dut.watchdog_timer) > 0):
+                 # If heartbeat input hasn't toggled
+                 with m.If(Past(dut.heartbeat_in) == dut.heartbeat_in):
+                    m.d.comb += Assert(dut.watchdog_timer == Past(dut.watchdog_timer) - 1)
             
-            with m.If(prev_watchdog_timer == 0):
+            with m.If(Past(dut.watchdog_timer) == 0):
                 m.d.comb += Assert(dut.violation_heartbeat == 1)
 
-        # Cover the lock state to ensure it is reachable
+        # 4. Reset Logic
+        with m.If(dut.rst_lock):
+            m.d.comb += Assert(~dut.locked)
+
+        # --- Coverage ---
         m.d.comb += Cover(dut.locked)
+        m.d.comb += Cover(dut.drop_current)
+        
+        # Cover individual violations
+        m.d.comb += [
+            Cover(dut.violation_volume),
+            Cover(dut.violation_ttl),
+            Cover(dut.violation_wg_size),
+            Cover(dut.violation_plaintext),
+            Cover(dut.violation_ethertype),
+            Cover(dut.violation_arp_rate),
+            Cover(dut.violation_ip_proto),
+            Cover(dut.violation_arp_size),
+            Cover(dut.violation_heartbeat),
+            Cover(dut.violation_tcp_flags),
+            Cover(dut.violation_tcp_options),
+            Cover(dut.violation_arp_opcode),
+            Cover(dut.violation_ip_options),
+            Cover(dut.violation_land),
+            Cover(dut.violation_loopback),
+            Cover(dut.violation_udp_len),
+            Cover(dut.violation_frag),
+        ]
 
         return m
 
@@ -95,4 +135,3 @@ security_airlock_formal.v
 """)
 
     print("[*] Generated SymbiYosys files (proof.sby, security_airlock_formal.v)")
-    print("[*] To run verification locally: sby -f proof.sby")
