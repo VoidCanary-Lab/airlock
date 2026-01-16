@@ -56,8 +56,8 @@ class ULX3SPlatform(LatticeECP5Platform):
                 Subsignal("tx_en",   Pins("U17", dir="o")), # 0- (GN0) -> TX_EN
                 Subsignal("txd0",    Pins("N17", dir="o")), # 1+ (GP1) -> TXD0
                 Subsignal("txd1",    Pins("P16", dir="o")), # 1- (GN1) -> TX1
-                Subsignal("rxd0",    Pins("M18", dir="i")), # 2+ (GP2) -> RX0
-                Subsignal("rxd1",    Pins("N16", dir="i")), # 2- (GN2) -> RX1
+                Subsignal("rxd0",    Pins("N16", dir="i")), # 2+ (GP2) -> RX0
+                Subsignal("rxd1",    Pins("M17", dir="i")), # 2- (GN2) -> RX1
                 Subsignal("crs_dv",  Pins("L16", dir="i")), # 3+ (GP3) -> CRS
                 Subsignal("mdc",     Pins("L17", dir="o")), # 3- (GN3) -> MDC
                 Subsignal("mdio",    Pins("H18", dir="io")),# 4+ (GP4) -> MDIO
