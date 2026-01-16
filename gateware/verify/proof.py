@@ -4,7 +4,7 @@
 import sys
 import os
 from amaranth import *
-from amaranth.hdl import Assert, Cover, Past
+from amaranth import Assert, Cover, Past
 from amaranth.sim import Simulator
 from amaranth.back import verilog
 
